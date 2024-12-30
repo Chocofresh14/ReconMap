@@ -63,6 +63,7 @@ sudo rmap [options]
 | `--ghost`             | Active le mode furtif.                                             |
 | `--timeout <valeur>`  | Définir le timeout (en ms) pour chaque requête.                    |
 | `--udp`               | Active le scan des ports UDP (par défaut : scan TCP uniquement) (non disponible).   |
+| `--exclude <ports>`   | Ports à exclure (ex: 80,443,8000-8010).                            |
 | `-o <fichier>`        | Exporte les résultats dans un fichier texte.                       |
 
 ---
