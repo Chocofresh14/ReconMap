@@ -15,6 +15,13 @@
 #define MAX_THREADS 100
 #define DEFAULT_TIMEOUT 1000  // ms
 #define MAX_PORT 65535
+#define MAX_EXCLUDED_RANGES 50
+
+// Structure pour représenter une plage de ports exclus
+typedef struct {
+    int start;
+    int end;
+} port_range;
 
 typedef struct {
     char ip[16];
@@ -25,6 +32,8 @@ typedef struct {
     int udp_scan;
     char* output_file;
     int thread_count;
+    port_range excluded_ports[MAX_EXCLUDED_RANGES];
+    int excluded_count;
 } scan_config;
 
 typedef struct {
@@ -42,9 +51,42 @@ typedef struct {
     int ghost_mode;
     port_result* results;
     pthread_mutex_t* mutex;
+    port_range* excluded_ports;
+    int excluded_count;
 } thread_args;
 
-// Nouvelle fonction pour convertir une URL en IP
+// Nouvelle fonction pour parser une chaîne d'exclusion
+void parse_exclude_ports(const char* exclude_str, scan_config* config) {
+    char* str = strdup(exclude_str);
+    char* token = strtok(str, ",");
+    
+    while (token && config->excluded_count < MAX_EXCLUDED_RANGES) {
+        char* hyphen = strchr(token, '-');
+        if (hyphen) {
+            *hyphen = '\0';
+            config->excluded_ports[config->excluded_count].start = atoi(token);
+            config->excluded_ports[config->excluded_count].end = atoi(hyphen + 1);
+        } else {
+            config->excluded_ports[config->excluded_count].start = atoi(token);
+            config->excluded_ports[config->excluded_count].end = atoi(token);
+        }
+        config->excluded_count++;
+        token = strtok(NULL, ",");
+    }
+    
+    free(str);
+}
+
+// Nouvelle fonction pour vérifier si un port est exclu
+int is_port_excluded(int port, port_range* excluded_ports, int excluded_count) {
+    for (int i = 0; i < excluded_count; i++) {
+        if (port >= excluded_ports[i].start && port <= excluded_ports[i].end) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 char* url_to_ip(const char* url, char* ip_buffer, size_t buffer_size) {
     struct hostent *he;
     struct in_addr **addr_list;
@@ -122,9 +164,13 @@ int scan_tcp_port(const char* ip, int port, int timeout, int ghost_mode) {
 
 void* scan_thread(void* arg) {
     thread_args* args = (thread_args*)arg;
-    int i;
     
-    for (i = args->start_port; i <= args->end_port; i++) {
+    for (int i = args->start_port; i <= args->end_port; i++) {
+        // Vérifier si le port est exclu avant de le scanner
+        if (is_port_excluded(i, args->excluded_ports, args->excluded_count)) {
+            continue;
+        }
+        
         int result = scan_tcp_port(args->target_ip, i, args->timeout, args->ghost_mode);
         
         pthread_mutex_lock(args->mutex);
@@ -149,7 +195,6 @@ void run_scan(scan_config* config) {
     pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
     port_result* results;
     int ports_per_thread;
-    int i;
     
     results = calloc(config->end_port + 1, sizeof(port_result));
     if (!results) {
@@ -159,7 +204,7 @@ void run_scan(scan_config* config) {
     
     ports_per_thread = (config->end_port - config->start_port + 1) / config->thread_count;
     
-    for (i = 0; i < config->thread_count; i++) {
+    for (int i = 0; i < config->thread_count; i++) {
         thread_configs[i].target_ip = config->ip;
         thread_configs[i].start_port = config->start_port + (i * ports_per_thread);
         thread_configs[i].end_port = (i == config->thread_count - 1) ? 
@@ -169,6 +214,8 @@ void run_scan(scan_config* config) {
         thread_configs[i].ghost_mode = config->ghost_mode;
         thread_configs[i].results = results;
         thread_configs[i].mutex = &mutex;
+        thread_configs[i].excluded_ports = config->excluded_ports;
+        thread_configs[i].excluded_count = config->excluded_count;
         
         if (pthread_create(&threads[i], NULL, scan_thread, &thread_configs[i]) != 0) {
             printf("Erreur lors de la création du thread %d\n", i);
@@ -176,7 +223,7 @@ void run_scan(scan_config* config) {
         }
     }
     
-    for (i = 0; i < config->thread_count; i++) {
+    for (int i = 0; i < config->thread_count; i++) {
         pthread_join(threads[i], NULL);
     }
     
@@ -184,7 +231,7 @@ void run_scan(scan_config* config) {
     printf("PORT\tSTATUS\t\tSERVICE\n");
     printf("------------------------------------\n");
     
-    for (i = config->start_port; i <= config->end_port; i++) {
+    for (int i = config->start_port; i <= config->end_port; i++) {
         if (results[i].is_open) {
             printf("%d\t%s\t\t%s\n", results[i].port, results[i].status, results[i].service);
         }
@@ -195,7 +242,7 @@ void run_scan(scan_config* config) {
         if (f) {
             fprintf(f, "PORT\tSTATUS\t\tSERVICE\n");
             fprintf(f, "------------------------------------\n");
-            for (i = config->start_port; i <= config->end_port; i++) {
+            for (int i = config->start_port; i <= config->end_port; i++) {
                 if (results[i].is_open) {
                     fprintf(f, "%d\t%s\t\t%s\n", results[i].port, results[i].status, results[i].service);
                 }
@@ -210,14 +257,15 @@ void run_scan(scan_config* config) {
 void print_usage() {
     printf("Usage: rmap [options]\n");
     printf("Options:\n");
-    printf("  -t <IP>           IP cible\n");
-    printf("  -u <URL>          URL cible (ex: example.com)\n");
-    printf("  -p <start-end>    Plage de ports (ex: 20-80)\n");
-    printf("  --ghost           Mode furtif\n");
-    printf("  --timeout <ms>    Timeout en millisecondes\n");
-    printf("  --udp             Scan UDP (non implémenté)\n");
-    printf("  -o <fichier>      Fichier de sortie\n");
-    printf("  -h                Aide\n");
+    printf("  -t <IP>              IP cible\n");
+    printf("  -u <URL>             URL cible (ex: example.com)\n");
+    printf("  -p <start-end>       Plage de ports (ex: 20-80)\n");
+    printf("  --ghost              Mode furtif\n");
+    printf("  --timeout <ms>       Timeout en millisecondes\n");
+    printf("  --udp                Scan UDP (non implémenté)\n");
+    printf("  --exclude <ports>    Ports à exclure (ex: 80,443,8000-8010)\n");
+    printf("  -o <fichier>         Fichier de sortie\n");
+    printf("  -h                   Aide\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -228,7 +276,8 @@ int main(int argc, char* argv[]) {
         .ghost_mode = 0,
         .udp_scan = 0,
         .output_file = NULL,
-        .thread_count = 10
+        .thread_count = 10,
+        .excluded_count = 0
     };
     
     char url_buffer[256] = {0};
@@ -238,22 +287,22 @@ int main(int argc, char* argv[]) {
         {"ghost", no_argument, 0, 'g'},
         {"timeout", required_argument, 0, 'm'},
         {"udp", no_argument, 0, 'u'},
+        {"exclude", required_argument, 0, 'e'},
         {0, 0, 0, 0}
     };
     
-    while ((opt = getopt_long(argc, argv, "t:u:p:o:hm:g", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "t:u:p:o:hm:ge:", long_options, NULL)) != -1) {
         switch (opt) {
             case 't':
                 strncpy(config.ip, optarg, sizeof(config.ip) - 1);
                 break;
-            case 'u': {
+            case 'u':
                 if (url_to_ip(optarg, config.ip, sizeof(config.ip)) == NULL) {
                     printf("Erreur: Impossible de résoudre l'URL %s\n", optarg);
                     return 1;
                 }
                 strncpy(url_buffer, optarg, sizeof(url_buffer) - 1);
                 break;
-            }
             case 'p': {
                 char* hyphen = strchr(optarg, '-');
                 if (hyphen) {
@@ -263,6 +312,9 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             }
+            case 'e':
+                parse_exclude_ports(optarg, &config);
+                break;
             case 'g':
                 config.ghost_mode = 1;
                 break;
@@ -296,6 +348,18 @@ int main(int argc, char* argv[]) {
            config.ip,
            config.start_port, config.end_port);
     if (config.ghost_mode) printf("Mode ghost activé\n");
+    if (config.excluded_count > 0) {
+        printf("Ports exclus : ");
+        for (int i = 0; i < config.excluded_count; i++) {
+            if (config.excluded_ports[i].start == config.excluded_ports[i].end) {
+                printf("%d", config.excluded_ports[i].start);
+            } else {
+                printf("%d-%d", config.excluded_ports[i].start, config.excluded_ports[i].end);
+            }
+            if (i < config.excluded_count - 1) printf(", ");
+        }
+        printf("\n");
+    }
     
     run_scan(&config);
     
