@@ -35,6 +35,16 @@ ReconMap est un outil de scan de ports réseau écrit en C, conçu pour être à
 - Bibliothèque réseau (optionnelle si non incluse dans le code, ex. `libpcap`).
 
 ### Compilation
+Clonez le dépôt Github :
+```bash
+git clone https://github.com/Chocofresh14/ReconMap.git
+```
+
+Allez dans le dossier `ReconMap` :
+```bash
+cd ReconMap
+```
+
 Exécutez le fichier shell pour l'installer et le compiler :
 ```bash
 sudo bash install.sh
