@@ -1,4 +1,4 @@
-# Makefile pour Targetmap
+# Makefile pour ReconMap
 CC = gcc
 CFLAGS = -Wall -Wextra
 LDFLAGS = -pthread
